@@ -1,16 +1,45 @@
-# React + Vite
+# Functiomed Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite frontend for Functiomed medical platform.
 
-Currently, two official plugins are available:
+## Setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+```bash
+cp .env.example .env
+# Edit .env with your values
 
-## React Compiler
+npm install
+npm run dev
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Environment Variables
 
-## Expanding the ESLint configuration
+| Variable | Description |
+|---|---|
+| `VITE_API_URL` | FastAPI backend URL (default: `/api` via Vite proxy) |
+| `VITE_LIVEKIT_URL` | LiveKit server WebSocket URL |
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Pages
+
+| Route | Description |
+|---|---|
+| `/chat` | Voice agent — LiveKit session + booking status panel |
+| `/admin` | Dashboard with stats and charts |
+| `/admin/bookings` | Bookings CRUD — filter, edit, cancel, delete |
+| `/admin/doctors` | Doctors CRUD + service assignment manager |
+| `/admin/services` | Services CRUD |
+| `/admin/slots` | Slots CRUD — filter by doctor/service, toggle availability |
+| `/admin/pdfs` | PDF upload/delete — drag-and-drop |
+
+## Backend Requirements
+
+Expects the following endpoints to exist on your FastAPI backend:
+
+- `GET/POST/PATCH/DELETE /bookings/...`
+- `GET/POST/PATCH/DELETE /clinic/services/...`
+- `GET/POST/PATCH/DELETE /clinic/doctors/...`
+- `GET/POST/PATCH/DELETE /clinic/slots/...`
+- `GET/POST/DELETE /pdfs/...`
+- `GET /livekit/token?room=...&identity=...`
+
+All proxied through `/api` in development.
