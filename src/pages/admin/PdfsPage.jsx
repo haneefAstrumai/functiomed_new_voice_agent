@@ -5,8 +5,10 @@ import { PageHeader } from '../../components/admin/PageHeader'
 
 const BASE = import.meta.env.VITE_API_URL || '/api'
 
-async function ingestPdfs() {
-  const res = await fetch(`${BASE}/pdfs/ingest?rebuild_index=true`, { method: 'POST' })
+async function req(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } }
+  if (body !== undefined) opts.body = JSON.stringify(body)
+  const res = await fetch(`${BASE}${path}`, opts)
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || `HTTP ${res.status}`)
@@ -19,10 +21,13 @@ export default function PdfsPage() {
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [ingesting, setIngesting] = useState(false)
+  const [scraping, setScraping] = useState(false)
+  const [scrapeStatus, setScrapeStatus] = useState(null)
   const [search, setSearch] = useState('')
   const [confirmDel, setConfirmDel] = useState(null)
   const [dragOver, setDragOver] = useState(false)
   const fileRef = useRef()
+  const pollRef = useRef(null)
 
   async function load() {
     setLoading(true)
@@ -30,7 +35,7 @@ export default function PdfsPage() {
       const res = await api.pdfs.list()
       setPdfs(res.pdfs || res.documents || res || [])
     } catch (e) {
-      showToast('Could not load PDFs — check /pdfs/ endpoint', 'error')
+      showToast('Could not load PDFs', 'error')
       setPdfs([])
     } finally {
       setLoading(false)
@@ -38,6 +43,28 @@ export default function PdfsPage() {
   }
 
   useEffect(() => { load() }, [])
+
+  // Poll scrape status while running
+  useEffect(() => {
+    if (scraping) {
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await req('GET', '/scrape/status')
+          setScrapeStatus(s)
+          if (!s.running) {
+            setScraping(false)
+            clearInterval(pollRef.current)
+            if (s.error) {
+              showToast(`Scrape failed: ${s.error}`, 'error')
+            } else {
+              showToast(`Scrape done — ${s.scraped} pages saved, ${s.failed} failed`, 'success')
+            }
+          }
+        } catch (_) {}
+      }, 2000)
+    }
+    return () => clearInterval(pollRef.current)
+  }, [scraping])
 
   async function upload(files) {
     if (!files?.length) return
@@ -77,7 +104,7 @@ export default function PdfsPage() {
   async function handleIngest() {
     setIngesting(true)
     try {
-      const res = await ingestPdfs()
+      const res = await req('POST', '/pdfs/ingest?rebuild_index=true')
       showToast(res.message || 'Ingestion started', 'success')
       if (res.index_rebuild) showToast('Index rebuilding in background…', 'info')
       load()
@@ -85,6 +112,17 @@ export default function PdfsPage() {
       showToast(`Ingestion failed: ${e.message}`, 'error')
     } finally {
       setIngesting(false)
+    }
+  }
+
+  async function handleScrape() {
+    try {
+      const res = await req('POST', '/scrape')
+      setScraping(true)
+      setScrapeStatus({ running: true, scraped: 0, failed: 0 })
+      showToast(res.message || 'Scraping started…', 'info')
+    } catch (e) {
+      showToast(`Scrape failed: ${e.message}`, 'error')
     }
   }
 
@@ -103,10 +141,15 @@ export default function PdfsPage() {
     <div style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }} className="fade-in">
       <PageHeader
         title="Documents"
-        sub="PDF knowledge base for RAG system"
+        sub="PDF & web knowledge base for RAG system"
         actions={
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
             <SearchInput value={search} onChange={setSearch} placeholder="Search documents..." />
+            <Btn variant="secondary" onClick={handleScrape} disabled={scraping}>
+              {scraping
+                ? <><Spinner size={12} /> Scraping{scrapeStatus ? ` (${scrapeStatus.scraped})` : '…'}</>
+                : '🌐 Scrape Website'}
+            </Btn>
             <Btn variant="secondary" onClick={handleIngest} disabled={ingesting}>
               {ingesting ? <><Spinner size={12} /> Ingesting…</> : '⚡ Ingest All'}
             </Btn>
@@ -114,10 +157,7 @@ export default function PdfsPage() {
               {uploading ? <><Spinner size={12} /> Uploading…</> : '↑ Upload PDF'}
             </Btn>
             <input
-              ref={fileRef}
-              type="file"
-              accept=".pdf"
-              multiple
+              ref={fileRef} type="file" accept=".pdf" multiple
               style={{ display: 'none' }}
               onChange={e => upload(Array.from(e.target.files))}
             />
@@ -125,23 +165,41 @@ export default function PdfsPage() {
         }
       />
 
-      {/* Ingest info banner */}
+      {/* Workflow banner */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: '12px',
-        padding: '12px 16px', background: 'rgba(0,212,255,0.04)',
+        display: 'flex', alignItems: 'flex-start', gap: '12px',
+        padding: '14px 16px', background: 'rgba(0,212,255,0.04)',
         border: '1px solid rgba(0,212,255,0.12)', borderRadius: 'var(--radius)',
       }}>
-        <span style={{ fontSize: '16px' }}>ℹ</span>
-        <span style={{ fontSize: '12px', color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>
-          After uploading PDFs, click <strong style={{ color: 'var(--cyan)' }}>⚡ Ingest All</strong> to parse and rebuild the RAG index.
-        </span>
+        <span style={{ fontSize: '16px', marginTop: '1px' }}>ℹ</span>
+        <div style={{ fontSize: '12px', color: 'var(--text-2)', fontFamily: 'var(--font-mono)', lineHeight: 1.8 }}>
+          <strong style={{ color: 'var(--cyan)' }}>Workflow:</strong>
+          {' '}1. <strong style={{ color: 'var(--text-1)' }}>🌐 Scrape Website</strong> — fetches all 83 functiomed.ch pages to disk
+          {' '}→ 2. <strong style={{ color: 'var(--text-1)' }}>↑ Upload PDF</strong> — add any extra documents
+          {' '}→ 3. <strong style={{ color: 'var(--text-1)' }}>⚡ Ingest All</strong> — parses & rebuilds the RAG index
+        </div>
       </div>
+
+      {/* Scrape progress */}
+      {scraping && scrapeStatus && (
+        <div style={{
+          padding: '14px 16px', background: 'rgba(0,232,122,0.04)',
+          border: '1px solid rgba(0,232,122,0.2)', borderRadius: 'var(--radius)',
+          display: 'flex', alignItems: 'center', gap: '12px',
+        }}>
+          <Spinner size={14} />
+          <span style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', color: 'var(--green)' }}>
+            Scraping in progress — {scrapeStatus.scraped} pages saved so far…
+          </span>
+        </div>
+      )}
 
       {/* Drop zone */}
       <div
         onDragOver={e => { e.preventDefault(); setDragOver(true) }}
         onDragLeave={() => setDragOver(false)}
         onDrop={e => { e.preventDefault(); setDragOver(false); upload(Array.from(e.dataTransfer.files)) }}
+        onClick={() => fileRef.current?.click()}
         style={{
           border: `2px dashed ${dragOver ? 'var(--cyan)' : 'var(--border)'}`,
           borderRadius: 'var(--radius-lg)', padding: '28px',
@@ -149,7 +207,6 @@ export default function PdfsPage() {
           background: dragOver ? 'rgba(0,212,255,0.04)' : 'transparent',
           transition: 'all 0.2s', cursor: 'pointer',
         }}
-        onClick={() => fileRef.current?.click()}
       >
         <span style={{ fontSize: '28px' }}>📄</span>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-2)' }}>
