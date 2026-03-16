@@ -37,6 +37,7 @@ export const api = {
   // ── Doctors ───────────────────────────────────────────────
   doctors: {
     list:           ()           => req('GET', '/clinic/doctors'),
+    listByService:  (name)       => req('GET', `/clinic/doctors?service=${encodeURIComponent(name)}`),
     get:            (id)         => req('GET', `/clinic/doctors/${id}`),
     create:         (data)       => req('POST', '/clinic/doctors', data),
     update:         (id, d)      => req('PATCH', `/clinic/doctors/${id}`, d),
@@ -45,6 +46,7 @@ export const api = {
     assignService:  (id, svcId)  => req('POST', `/clinic/doctors/${id}/services`, { service_id: svcId }),
     removeService:  (id, svcId)  => req('DELETE', `/clinic/doctors/${id}/services/${svcId}`),
   },
+ 
 
   // ── Slots ─────────────────────────────────────────────────
   slots: {
