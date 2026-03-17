@@ -18,6 +18,13 @@ async function req(method, path, body) {
 export const api = {
   bookings: {
     list:   (status) => req('GET', `/bookings/${status ? `?status=${status}` : ''}`),
+    // Used by admin BookingsPage to send arbitrary filter params
+    listFiltered: (params = {}) => {
+      const q = new URLSearchParams(
+        Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ''))
+      ).toString()
+      return req('GET', `/bookings/${q ? `?${q}` : ''}`)
+    },
     get:    (id)     => req('GET', `/bookings/${id}`),
     create: (data)   => req('POST', '/bookings/', data),
     update: (id, d)  => req('PATCH', `/bookings/${id}`, d),
@@ -71,6 +78,7 @@ export const api = {
 
   // ── LiveKit token ─────────────────────────────────────────
   livekit: {
-    token: (room, identity) => req('GET', `/livekit/token?room=${room}&identity=${identity}`),
+    token: (room, identity, mode = 'rag') =>
+      req('GET', `/livekit/token?room=${room}&identity=${identity}&mode=${encodeURIComponent(mode)}`),
   },
 }

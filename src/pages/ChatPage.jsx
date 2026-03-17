@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Btn, Spinner } from '../components/ui'
+import { api } from '../lib/api'
 
 const BACKEND = import.meta.env.VITE_API_URL || '/api'
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL || 'wss://your-livekit-server.livekit.cloud'
@@ -23,7 +24,9 @@ export default function ChatPage() {
   const [bookingState, setBookingState] = useState(null)
   const [messages, setMessages] = useState([])
   const [agentSpeaking, setAgentSpeaking] = useState(false)
-  const [roomName] = useState(() => `room-${Math.random().toString(36).slice(2, 8)}`)
+  const [mode, setMode] = useState('rag') // 'rag' | 'booking'
+  const [roomNameBase] = useState(() => `room-${Math.random().toString(36).slice(2, 8)}`)
+  const [sessionRoomName, setSessionRoomName] = useState(null)
   const [identity] = useState(() => `user-${Math.random().toString(36).slice(2, 8)}`)
   const chatRef = useRef(null)
 
@@ -47,9 +50,9 @@ export default function ChatPage() {
     setConnecting(true)
     setError(null)
     try {
-      const res = await fetch(`${BACKEND}/livekit/token?room=${roomName}&identity=${identity}`)
-      if (!res.ok) throw new Error('Failed to get token — check backend /livekit/token')
-      const { token } = await res.json()
+      const roomName = `${roomNameBase}-${mode}`
+      setSessionRoomName(roomName)
+      const { token } = await api.livekit.token(roomName, identity, mode)
 
       const { Room, RoomEvent } = await import('livekit-client')
       const r = new Room()
@@ -94,13 +97,21 @@ export default function ChatPage() {
         setConnected(false)
         setRoom(null)
         setAgentSpeaking(false)
+        setSessionRoomName(null)
       })
 
       await r.connect(LIVEKIT_URL, token)
       await r.localParticipant.setMicrophoneEnabled(true)
       setRoom(r)
       setConnected(true)
-      setMessages([{ role: 'system', text: 'Session started — speak to the agent', ts: Date.now(), time: new Date() }])
+      setMessages([{
+        role: 'system',
+        text: mode === 'booking'
+          ? 'Booking session started — say the service you want'
+          : 'RAG session started — ask a clinic question',
+        ts: Date.now(),
+        time: new Date(),
+      }])
     } catch (e) {
       setError(e.message)
     } finally {
@@ -115,6 +126,7 @@ export default function ChatPage() {
       setConnected(false)
       setBookingState(null)
       setAgentSpeaking(false)
+      setSessionRoomName(null)
     }
   }
 
@@ -137,6 +149,50 @@ export default function ChatPage() {
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {/* Mode toggle (only before connecting) */}
+          {!connected && (
+            <div style={{
+              display: 'flex',
+              background: 'var(--bg-2)',
+              border: '1px solid var(--border)',
+              borderRadius: '999px',
+              padding: '3px',
+              gap: '3px',
+            }}>
+              <button
+                onClick={() => setMode('rag')}
+                disabled={connecting}
+                style={{
+                  cursor: connecting ? 'not-allowed' : 'pointer',
+                  border: 'none',
+                  borderRadius: '999px',
+                  padding: '7px 12px',
+                  fontSize: '12px',
+                  fontFamily: 'var(--font-mono)',
+                  color: mode === 'rag' ? 'var(--bg-0)' : 'var(--text-2)',
+                  background: mode === 'rag' ? 'var(--cyan)' : 'transparent',
+                }}
+              >
+                RAG
+              </button>
+              <button
+                onClick={() => setMode('booking')}
+                disabled={connecting}
+                style={{
+                  cursor: connecting ? 'not-allowed' : 'pointer',
+                  border: 'none',
+                  borderRadius: '999px',
+                  padding: '7px 12px',
+                  fontSize: '12px',
+                  fontFamily: 'var(--font-mono)',
+                  color: mode === 'booking' ? 'var(--bg-0)' : 'var(--text-2)',
+                  background: mode === 'booking' ? 'var(--cyan)' : 'transparent',
+                }}
+              >
+                Booking
+              </button>
+            </div>
+          )}
           {connected && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'var(--green)', animation: 'pulse 1.5s infinite', boxShadow: '0 0 8px var(--green)' }} />
@@ -154,7 +210,7 @@ export default function ChatPage() {
       </div>
 
       {/* ── Body ── */}
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 340px', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: mode === 'booking' ? '1fr 340px' : '1fr', overflow: 'hidden' }}>
 
         {/* Left — visualizer + chat bubbles */}
         <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -167,7 +223,11 @@ export default function ChatPage() {
                   position: 'absolute', inset: `${-i * 18}px`,
                   border: `1px solid rgba(0,212,255,${(agentSpeaking ? 0.35 : connected ? 0.12 : 0.04) - i * 0.04})`,
                   borderRadius: '50%',
-                  animation: connected ? `pulse ${1.2 + i * 0.4}s ease-in-out infinite` : 'none',
+                  // Avoid mixing `animation` shorthand with `animationDelay` (React warning)
+                  animationName: connected ? 'pulse' : 'none',
+                  animationDuration: `${1.2 + i * 0.4}s`,
+                  animationTimingFunction: 'ease-in-out',
+                  animationIterationCount: 'infinite',
                   animationDelay: `${i * 0.15}s`,
                   transition: 'all 0.3s',
                 }} />
@@ -196,7 +256,7 @@ export default function ChatPage() {
                 {agentSpeaking ? 'Agent Speaking...' : connected ? 'Listening...' : 'Ready to Connect'}
               </div>
               <div style={{ fontSize: '11px', color: 'var(--text-3)', fontFamily: 'var(--font-mono)', marginTop: '3px' }}>
-                {connected ? `Session: ${roomName}` : 'Click Start Session to begin'}
+                {connected ? `Session: ${sessionRoomName || roomNameBase}` : 'Click Start Session to begin'}
               </div>
             </div>
 
@@ -286,6 +346,7 @@ export default function ChatPage() {
         </div>
 
         {/* ── Right: Booking status panel ── */}
+        {mode === 'booking' && (
         <div style={{ borderLeft: '1px solid var(--border)', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto', background: 'var(--bg-1)' }}>
 
           <div>
@@ -344,6 +405,7 @@ export default function ChatPage() {
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   )
