@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { api } from '../../lib/api'
 import { Table, Badge, Btn, Modal, Input, Select, Confirm, SearchInput, Spinner, Empty, showToast } from '../../components/ui'
 import { PageHeader } from '../../components/admin/PageHeader'
@@ -19,18 +19,40 @@ function statusBadge(s) {
 
 export default function BookingsPage() {
   const [bookings, setBookings] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState('')
-  const [editModal, setEditModal] = useState(null)
+  const [doctors, setDoctors]   = useState([])
+  const [services, setServices] = useState([])
+  const [loading, setLoading]   = useState(true)
+
+  // Filters — sent to backend on every change
+  const [filters, setFilters] = useState({
+    status:       '',
+    doctor_name:  '',
+    service_name: '',
+    date_from:    '',
+    date_to:      '',
+    time_from:    '',
+    time_to:      '',
+    search:       '',
+  })
+
+  const [editModal, setEditModal]     = useState(null)
   const [detailModal, setDetailModal] = useState(null)
-  const [confirmDel, setConfirmDel] = useState(null)
+  const [confirmDel, setConfirmDel]   = useState(null)
 
   async function load() {
     setLoading(true)
     try {
-      const res = await api.bookings.list(statusFilter || undefined)
-      setBookings(res.bookings || [])
+      const params = {}
+      Object.entries(filters).forEach(([k, v]) => { if (v) params[k] = v })
+
+      const [bRes, dRes, sRes] = await Promise.all([
+        api.bookings.listFiltered(params),
+        api.doctors.list(),
+        api.services.list(),
+      ])
+      setBookings(bRes.bookings || [])
+      setDoctors(dRes.doctors   || [])
+      setServices(sRes.services || [])
     } catch (e) {
       showToast(`Load failed: ${e.message}`, 'error')
     } finally {
@@ -38,15 +60,31 @@ export default function BookingsPage() {
     }
   }
 
-  useEffect(() => { load() }, [statusFilter])
+  useEffect(() => { load() }, [filters])
 
-  const filtered = bookings.filter(b =>
-    !search ||
-    b.patient_name?.toLowerCase().includes(search.toLowerCase()) ||
-    b.confirmation_number?.toLowerCase().includes(search.toLowerCase()) ||
-    b.doctor_name?.toLowerCase().includes(search.toLowerCase()) ||
-    b.service_name?.toLowerCase().includes(search.toLowerCase())
-  )
+  function setFilter(key, value) {
+    setFilters(f => ({ ...f, [key]: value }))
+  }
+
+  const hasFilters = Object.values(filters).some(v => v !== '')
+
+  function clearFilters() {
+    setFilters({
+      status: '', doctor_name: '', service_name: '',
+      date_from: '', date_to: '', time_from: '', time_to: '', search: '',
+    })
+  }
+
+  // Dropdown options built from loaded data
+  const doctorOptions = useMemo(() => [
+    { value: '', label: 'All Doctors' },
+    ...doctors.map(d => ({ value: d.full_name, label: d.full_name })),
+  ], [doctors])
+
+  const serviceOptions = useMemo(() => [
+    { value: '', label: 'All Services' },
+    ...services.map(s => ({ value: s.name, label: s.name })),
+  ], [services])
 
   async function handleCancel(booking) {
     try {
@@ -73,57 +111,150 @@ export default function BookingsPage() {
 
   const cols = [
     { key: 'id', label: 'ID', mono: true, nowrap: true },
-    { key: 'confirmation_number', label: 'Confirmation', mono: true, nowrap: true, render: v => <span style={{ color: 'var(--cyan)', letterSpacing: '0.05em' }}>{v}</span> },
-    { key: 'patient_name', label: 'Patient' },
-    { key: 'service_name', label: 'Service' },
-    { key: 'doctor_name', label: 'Doctor', render: v => v?.replace('Dr. ', 'Dr.\u00a0') },
-    { key: 'slot_date', label: 'Date', mono: true, nowrap: true, render: v => v || '—' },
-    { key: 'slot_time', label: 'Time', mono: true, nowrap: true, render: v => v || '—' },
-    { key: 'status', label: 'Status', render: v => statusBadge(v) },
-    { key: 'booked_at', label: 'Booked', mono: true, nowrap: true, render: v => v ? v.slice(0, 16) : '—' },
-    { key: '_actions', label: '', render: (_, row) => (
-      <div style={{ display: 'flex', gap: '6px' }} onClick={e => e.stopPropagation()}>
-        <Btn size="sm" variant="ghost" onClick={() => setEditModal(row)}>Edit</Btn>
-        {row.status === 'confirmed' && (
-          <Btn size="sm" variant="warning" onClick={() => handleCancel(row)}>Cancel</Btn>
-        )}
-        <Btn size="sm" variant="danger" onClick={() => setConfirmDel(row)}>Delete</Btn>
-      </div>
-    )},
+    {
+      key: 'confirmation_number', label: 'Confirmation', mono: true, nowrap: true,
+      render: v => <span style={{ color: 'var(--cyan)', letterSpacing: '0.05em' }}>{v}</span>,
+    },
+    { key: 'patient_name',  label: 'Patient' },
+    { key: 'service_name',  label: 'Service' },
+    { key: 'doctor_name',   label: 'Doctor', render: v => v?.replace('Dr. ', 'Dr.\u00a0') },
+    { key: 'slot_date',     label: 'Date',   mono: true, nowrap: true, render: v => v || '—' },
+    { key: 'slot_time',     label: 'Time',   mono: true, nowrap: true, render: v => v || '—' },
+    { key: 'status',        label: 'Status', render: v => statusBadge(v) },
+    { key: 'booked_at',     label: 'Booked', mono: true, nowrap: true, render: v => v ? v.slice(0, 16) : '—' },
+    {
+      key: '_actions', label: '',
+      render: (_, row) => (
+        <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }} onClick={e => e.stopPropagation()}>
+          <Btn size="sm" variant="ghost" onClick={() => setEditModal(row)}>Edit</Btn>
+          {row.status === 'confirmed' && (
+            <Btn size="sm" variant="warning" onClick={() => handleCancel(row)}>Cancel</Btn>
+          )}
+          <Btn size="sm" variant="danger" onClick={() => setConfirmDel(row)}>Delete</Btn>
+        </div>
+      ),
+    },
   ]
+
+  const timeInputStyle = {
+    height: '36px', padding: '0 10px',
+    background: 'var(--bg-3)', border: '1px solid var(--border)',
+    borderRadius: 'var(--radius)', color: 'var(--text-0)',
+    fontSize: '13px', fontFamily: 'var(--font-mono)', outline: 'none',
+  }
 
   return (
     <div style={{ padding: '32px', display: 'flex', flexDirection: 'column', gap: '24px' }} className="fade-in">
       <PageHeader
         title="Bookings"
-        sub={`${filtered.length} records${statusFilter ? ` · ${statusFilter}` : ''}`}
+        sub={`${bookings.length} records${hasFilters ? ' · filtered' : ''}`}
         actions={
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-            <SearchInput value={search} onChange={setSearch} placeholder="Search patient, doctor..." />
-            <Select
-              value={statusFilter}
-              onChange={e => setStatusFilter(e.target.value)}
-              options={STATUS_OPTIONS}
-              style={{ minWidth: '160px' }}
-            />
-            <Btn variant="secondary" onClick={load}>↻ Refresh</Btn>
-          </div>
+          <Btn variant="secondary" onClick={load}>↻ Refresh</Btn>
         }
       />
 
+      {/* ── Filter bar ── */}
+      <div style={{
+        display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center',
+        padding: '16px 20px',
+        background: 'var(--bg-2)', border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-lg)',
+      }}>
+        {/* Search: patient name or confirmation */}
+        <SearchInput
+          value={filters.search}
+          onChange={v => setFilter('search', v)}
+          placeholder="Patient or confirmation..."
+          style={{ minWidth: '200px', flex: '1' }}
+        />
+
+        {/* Doctor */}
+        <Select
+          value={filters.doctor_name}
+          onChange={e => setFilter('doctor_name', e.target.value)}
+          options={doctorOptions}
+          style={{ minWidth: '160px' }}
+        />
+
+        {/* Service */}
+        <Select
+          value={filters.service_name}
+          onChange={e => setFilter('service_name', e.target.value)}
+          options={serviceOptions}
+          style={{ minWidth: '160px' }}
+        />
+
+        {/* Status */}
+        <Select
+          value={filters.status}
+          onChange={e => setFilter('status', e.target.value)}
+          options={STATUS_OPTIONS}
+          style={{ minWidth: '140px' }}
+        />
+
+        {/* Date range */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-3)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>DATE</span>
+          <input
+            type="date"
+            value={filters.date_from}
+            onChange={e => setFilter('date_from', e.target.value)}
+            style={{ ...timeInputStyle, width: '140px' }}
+            onFocus={e => e.target.style.borderColor = 'var(--cyan-dim)'}
+            onBlur={e => e.target.style.borderColor = 'var(--border)'}
+          />
+          <span style={{ color: 'var(--text-3)', fontSize: '12px' }}>→</span>
+          <input
+            type="date"
+            value={filters.date_to}
+            onChange={e => setFilter('date_to', e.target.value)}
+            style={{ ...timeInputStyle, width: '140px' }}
+            onFocus={e => e.target.style.borderColor = 'var(--cyan-dim)'}
+            onBlur={e => e.target.style.borderColor = 'var(--border)'}
+          />
+        </div>
+
+        {/* Time range */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--text-3)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>TIME</span>
+          <input
+            type="time"
+            value={filters.time_from}
+            onChange={e => setFilter('time_from', e.target.value)}
+            style={{ ...timeInputStyle, width: '120px' }}
+            onFocus={e => e.target.style.borderColor = 'var(--cyan-dim)'}
+            onBlur={e => e.target.style.borderColor = 'var(--border)'}
+          />
+          <span style={{ color: 'var(--text-3)', fontSize: '12px' }}>→</span>
+          <input
+            type="time"
+            value={filters.time_to}
+            onChange={e => setFilter('time_to', e.target.value)}
+            style={{ ...timeInputStyle, width: '120px' }}
+            onFocus={e => e.target.style.borderColor = 'var(--cyan-dim)'}
+            onBlur={e => e.target.style.borderColor = 'var(--border)'}
+          />
+        </div>
+
+        {hasFilters && (
+          <Btn variant="ghost" size="sm" onClick={clearFilters}>✕ Clear</Btn>
+        )}
+      </div>
+
+      {/* ── Table ── */}
       <div style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
         {loading ? (
           <div style={{ display: 'flex', justifyContent: 'center', padding: '48px' }}><Spinner size={24} /></div>
-        ) : filtered.length === 0 ? (
-          <Empty icon="⊞" text="No bookings found" />
+        ) : bookings.length === 0 ? (
+          <Empty icon="⊞" text={hasFilters ? 'No bookings match your filters' : 'No bookings found'} />
         ) : (
-          <Table columns={cols} rows={filtered} onRowClick={row => setDetailModal(row)} />
+          <Table columns={cols} rows={bookings} onRowClick={row => setDetailModal(row)} />
         )}
       </div>
 
       {/* Detail Modal */}
       <Modal open={!!detailModal} onClose={() => setDetailModal(null)} title={`Booking #${detailModal?.id}`} width={520}>
-        {detailModal && <BookingDetail booking={detailModal} onClose={() => setDetailModal(null)} onRefresh={load} />}
+        {detailModal && <BookingDetail booking={detailModal} onClose={() => setDetailModal(null)} />}
       </Modal>
 
       {/* Edit Modal */}
@@ -143,7 +274,8 @@ export default function BookingsPage() {
   )
 }
 
-function BookingDetail({ booking: b, onClose, onRefresh }) {
+
+function BookingDetail({ booking: b }) {
   const rows = [
     ['ID', b.id], ['Confirmation', b.confirmation_number],
     ['Status', b.status], ['Patient', b.patient_name],
@@ -168,17 +300,18 @@ function BookingDetail({ booking: b, onClose, onRefresh }) {
   )
 }
 
+
 function EditForm({ booking, onClose, onRefresh }) {
   const [form, setForm] = useState({
-    status: booking.status || 'confirmed',
-    patient_name: booking.patient_name || '',
-    slot_date: booking.slot_date || '',
-    slot_time: booking.slot_time || '',
-    language: booking.language || 'en',
+    status:          booking.status          || 'confirmed',
+    patient_name:    booking.patient_name    || '',
+    slot_date:       booking.slot_date       || '',
+    slot_time:       booking.slot_time       || '',
+    language:        booking.language        || 'en',
     session_summary: booking.session_summary || '',
   })
   const [saving, setSaving] = useState(false)
-  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
+  const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }))
 
   async function save() {
     setSaving(true)
@@ -199,8 +332,8 @@ function EditForm({ booking, onClose, onRefresh }) {
         options={[{ value: 'confirmed', label: 'Confirmed' }, { value: 'cancelled', label: 'Cancelled' }, { value: 'no_show', label: 'No Show' }]} />
       <Input label="Patient Name" value={form.patient_name} onChange={set('patient_name')} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-        <Input label="Slot Date" value={form.slot_date} onChange={set('slot_date')} placeholder="YYYY-MM-DD" />
-        <Input label="Slot Time" value={form.slot_time} onChange={set('slot_time')} placeholder="HH:MM" />
+        <Input label="Slot Date" type="date" value={form.slot_date} onChange={set('slot_date')} />
+        <Input label="Slot Time" type="time" value={form.slot_time} onChange={set('slot_time')} />
       </div>
       <Select label="Language" value={form.language} onChange={set('language')}
         options={[{ value: 'en', label: 'English' }, { value: 'de', label: 'German' }]} />
