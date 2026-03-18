@@ -294,7 +294,6 @@ function DoctorForm({ doctor, allServices = [], onClose, onRefresh }) {
     setSelectedServices(prev =>
       prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
     )
-    setErrors(err => ({ ...err, services: null }))
   }
 
   function validate() {
@@ -303,7 +302,6 @@ function DoctorForm({ doctor, allServices = [], onClose, onRefresh }) {
     if (!form.title.trim())      e.title      = 'Title is required'
     if (!form.department.trim()) e.department = 'Department is required'
     if (!form.bio.trim())        e.bio        = 'Bio is required'
-    if (!isEdit && selectedServices.length === 0) e.services = 'Select at least one service'
     return e
   }
 
@@ -356,13 +354,13 @@ function DoctorForm({ doctor, allServices = [], onClose, onRefresh }) {
       {!isEdit && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <div style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-            Services *{' '}
+            Services{' '}
             <span style={{ color: 'var(--text-3)', fontFamily: 'var(--font-body)', textTransform: 'none', letterSpacing: 0 }}>
-              (select at least one)
+              (optional — can be assigned later)
             </span>
           </div>
           {allServices.length === 0 ? (
-            <p style={{ color: 'var(--text-3)', fontSize: '12px' }}>No services available. Create services first.</p>
+            <p style={{ color: 'var(--text-3)', fontSize: '12px' }}>No services available. You can assign services later.</p>
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
               {allServices.map(s => {
@@ -383,7 +381,6 @@ function DoctorForm({ doctor, allServices = [], onClose, onRefresh }) {
               })}
             </div>
           )}
-          {errors.services && <span style={{ color: 'var(--red)', fontSize: '11px' }}>{errors.services}</span>}
         </div>
       )}
 
