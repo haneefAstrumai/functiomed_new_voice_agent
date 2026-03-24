@@ -29,6 +29,7 @@ export default function ChatPage() {
   const [sessionRoomName, setSessionRoomName] = useState(null)
   const [identity] = useState(() => `user-${Math.random().toString(36).slice(2, 8)}`)
   const chatRef = useRef(null)
+  const streamMessageIds = useRef({ agent: null, user: null })
 
   useEffect(() => {
     if (chatRef.current) {
@@ -46,6 +47,31 @@ export default function ChatPage() {
     })
   }
 
+  function upsertStreamingMessage(role, text, isFinal) {
+    const clean = (text || '').trim()
+    if (!clean) return
+
+    const streamId = streamMessageIds.current[role] || `${role}-stream-${Date.now()}`
+    streamMessageIds.current[role] = streamId
+
+    setMessages(prev => {
+      const now = Date.now()
+      const idx = prev.findIndex(m => m.id === streamId)
+      if (idx >= 0) {
+        const copy = [...prev]
+        copy[idx] = { ...copy[idx], text: clean, ts: now, time: new Date(), streaming: !isFinal }
+        return copy
+      }
+      return [...prev, { id: streamId, role, text: clean, ts: now, time: new Date(), streaming: !isFinal }]
+    })
+
+    if (isFinal) {
+      const finalId = `${role}-final-${Date.now()}`
+      setMessages(prev => prev.map(m => (m.id === streamId ? { ...m, id: finalId, streaming: false } : m)))
+      streamMessageIds.current[role] = null
+    }
+  }
+
   async function connect() {
     setConnecting(true)
     setError(null)
@@ -58,11 +84,18 @@ export default function ChatPage() {
       const r = new Room()
 
       // DataChannel — booking state updates
-      r.on(RoomEvent.DataReceived, (payload) => {
+      r.on(RoomEvent.DataReceived, (payload, participant, kind, topic) => {
         try {
-          const msg = JSON.parse(new TextDecoder().decode(payload))
+          let raw = payload
+          if (raw instanceof ArrayBuffer) raw = new Uint8Array(raw)
+          if (raw instanceof Uint8Array) raw = new TextDecoder().decode(raw)
+          if (typeof raw !== 'string') raw = String(raw)
+
+          const msg = JSON.parse(raw)
           if (msg.type === 'booking_update') setBookingState(msg)
-        } catch {}
+        } catch (e) {
+          console.error('DataReceived parse error:', e)
+        }
       })
 
       // Attach agent audio to DOM for playback
@@ -81,9 +114,9 @@ export default function ChatPage() {
           const isAgent = !participant || participant.identity !== identity
           if (isAgent) {
             setAgentSpeaking(!seg.final)
-            if (seg.final) addMessage('agent', seg.text.trim())
+            upsertStreamingMessage('agent', seg.text, !!seg.final)
           } else {
-            if (seg.final) addMessage('user', seg.text.trim())
+            upsertStreamingMessage('user', seg.text, !!seg.final)
           }
         })
       })
@@ -104,6 +137,14 @@ export default function ChatPage() {
       await r.localParticipant.setMicrophoneEnabled(true)
       setRoom(r)
       setConnected(true)
+      if (mode === 'booking') {
+        setBookingState({
+          type: 'booking_update',
+          step: 'idle',
+          data: { service: null, doctor: null, slot: null, name: null },
+          available: [],
+        })
+      }
       setMessages([{
         role: 'system',
         text: mode === 'booking'
@@ -132,6 +173,18 @@ export default function ChatPage() {
 
   const stepInfo = bookingState ? (STEPS[bookingState.step] || STEPS.idle) : STEPS.idle
   const data = bookingState?.data || {}
+  const hasActiveAgentStream = messages.some(m => m.role === 'agent' && m.streaming)
+  const activeFieldByStep = {
+    idle: null,
+    collect_service: 'service',
+    collect_doctor: 'doctor',
+    collect_slot: 'slot',
+    collect_name: 'patient',
+    confirm: 'patient',
+    done: null,
+    cancelled: null,
+  }
+  const activeField = activeFieldByStep[bookingState?.step || 'idle']
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-0)' }}>
@@ -330,7 +383,7 @@ export default function ChatPage() {
             })}
 
             {/* Typing indicator while agent is speaking */}
-            {agentSpeaking && (
+            {agentSpeaking && !hasActiveAgentStream && (
               <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px' }}>
                 <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'rgba(0,212,255,0.12)', border: '1px solid rgba(0,212,255,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px' }}>
                   🤖
@@ -362,20 +415,18 @@ export default function ChatPage() {
 
           {/* Booking fields */}
           {[
-            { label: 'Service', value: data.service },
-            { label: 'Doctor',  value: data.doctor },
-            { label: 'Date',    value: data.slot_date },
-            { label: 'Time',    value: data.slot_time },
-            { label: 'Slot',    value: data.slot },
-            { label: 'Patient', value: data.name },
-          ].map(({ label, value }) => (
+            { key: 'service', label: 'Service', value: data.service },
+            { key: 'doctor',  label: 'Doctor',  value: data.doctor },
+            { key: 'slot',    label: 'Slot',    value: data.slot },
+            { key: 'patient', label: 'Patient', value: data.name },
+          ].map(({ key, label, value }) => (
             <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
               <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{label}</span>
               <span style={{
                 fontFamily: 'var(--font-mono)', fontSize: '12px',
                 color: value ? 'var(--text-0)' : 'var(--text-3)',
                 padding: '7px 10px', background: 'var(--bg-2)', borderRadius: 'var(--radius)',
-                border: `1px solid ${value ? 'var(--border-bright)' : 'var(--border)'}`,
+                border: `1px solid ${activeField === key ? 'var(--cyan)' : value ? 'var(--border-bright)' : 'var(--border)'}`,
                 minHeight: '32px',
               }}>
                 {value || '—'}
