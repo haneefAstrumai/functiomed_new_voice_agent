@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from 'react'
 import { Btn, Spinner } from '../components/ui'
 import { api } from '../lib/api'
 
-const BACKEND = import.meta.env.VITE_API_URL || '/api'
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL || 'wss://your-livekit-server.livekit.cloud'
 
 const STEPS = {
@@ -24,7 +23,9 @@ export default function ChatPage() {
   const [bookingState, setBookingState] = useState(null)
   const [messages, setMessages] = useState([])
   const [agentSpeaking, setAgentSpeaking] = useState(false)
-  const [mode, setMode] = useState('rag') // 'rag' | 'booking'
+  const [mode, setMode] = useState('rag')        // 'rag' | 'booking'
+  const [language, setLanguage] = useState(null) // null | 'en' | 'de'
+  const [showLangPicker, setShowLangPicker] = useState(false)
   const [roomNameBase] = useState(() => `room-${Math.random().toString(36).slice(2, 8)}`)
   const [sessionRoomName, setSessionRoomName] = useState(null)
   const [identity] = useState(() => `user-${Math.random().toString(36).slice(2, 8)}`)
@@ -37,23 +38,11 @@ export default function ChatPage() {
     }
   }, [messages, agentSpeaking])
 
-  function addMessage(role, text) {
-    setMessages(prev => {
-      const last = prev[prev.length - 1]
-      if (last && last.role === role && Date.now() - last.ts < 3000) {
-        return [...prev.slice(0, -1), { ...last, text: last.text + ' ' + text }]
-      }
-      return [...prev, { role, text, ts: Date.now(), time: new Date() }]
-    })
-  }
-
   function upsertStreamingMessage(role, text, isFinal) {
     const clean = (text || '').trim()
     if (!clean) return
-
     const streamId = streamMessageIds.current[role] || `${role}-stream-${Date.now()}`
     streamMessageIds.current[role] = streamId
-
     setMessages(prev => {
       const now = Date.now()
       const idx = prev.findIndex(m => m.id === streamId)
@@ -64,33 +53,47 @@ export default function ChatPage() {
       }
       return [...prev, { id: streamId, role, text: clean, ts: now, time: new Date(), streaming: !isFinal }]
     })
-
     if (isFinal) {
       const finalId = `${role}-final-${Date.now()}`
-      setMessages(prev => prev.map(m => (m.id === streamId ? { ...m, id: finalId, streaming: false } : m)))
+      setMessages(prev => prev.map(m => m.id === streamId ? { ...m, id: finalId, streaming: false } : m))
       streamMessageIds.current[role] = null
     }
   }
 
-  async function connect() {
+  // Step 1 — "Start Session" clicked: show language picker
+  function handleStartClick() {
+    setError(null)
+    setShowLangPicker(true)
+  }
+
+  // Step 2 — language selected: connect
+  async function handleLanguageSelect(lang) {
+    setLanguage(lang)
+    setShowLangPicker(false)
+    await connect(lang)
+  }
+
+  function handleLangPickerCancel() {
+    setShowLangPicker(false)
+  }
+
+  async function connect(lang) {
     setConnecting(true)
     setError(null)
     try {
-      const roomName = `${roomNameBase}-${mode}`
+      const roomName = `${roomNameBase}-${mode}-${lang}`
       setSessionRoomName(roomName)
       const { token } = await api.livekit.token(roomName, identity, mode)
 
       const { Room, RoomEvent } = await import('livekit-client')
       const r = new Room()
 
-      // DataChannel — booking state updates
-      r.on(RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+      r.on(RoomEvent.DataReceived, (payload) => {
         try {
           let raw = payload
           if (raw instanceof ArrayBuffer) raw = new Uint8Array(raw)
           if (raw instanceof Uint8Array) raw = new TextDecoder().decode(raw)
           if (typeof raw !== 'string') raw = String(raw)
-
           const msg = JSON.parse(raw)
           if (msg.type === 'booking_update') setBookingState(msg)
         } catch (e) {
@@ -98,7 +101,6 @@ export default function ChatPage() {
         }
       })
 
-      // Attach agent audio to DOM for playback
       r.on(RoomEvent.TrackSubscribed, (track) => {
         if (track.kind === 'audio') {
           const el = track.attach()
@@ -107,7 +109,6 @@ export default function ChatPage() {
         }
       })
 
-      // Transcription events → chat bubbles
       r.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
         segments.forEach(seg => {
           if (!seg.text?.trim()) return
@@ -121,7 +122,6 @@ export default function ChatPage() {
         })
       })
 
-      // Detect agent speaking via active speakers
       r.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         setAgentSpeaking(speakers.some(p => p.identity !== identity))
       })
@@ -137,6 +137,7 @@ export default function ChatPage() {
       await r.localParticipant.setMicrophoneEnabled(true)
       setRoom(r)
       setConnected(true)
+
       if (mode === 'booking') {
         setBookingState({
           type: 'booking_update',
@@ -145,16 +146,19 @@ export default function ChatPage() {
           available: [],
         })
       }
+
+      const langLabel = lang === 'de' ? 'German' : 'English'
       setMessages([{
         role: 'system',
         text: mode === 'booking'
-          ? 'Booking session started — say the service you want'
-          : 'RAG session started — ask a clinic question',
+          ? `Booking session started (${langLabel}) — say the service you want`
+          : `RAG session started (${langLabel}) — ask a clinic question`,
         ts: Date.now(),
         time: new Date(),
       }])
     } catch (e) {
       setError(e.message)
+      setLanguage(null)
     } finally {
       setConnecting(false)
     }
@@ -168,6 +172,7 @@ export default function ChatPage() {
       setBookingState(null)
       setAgentSpeaking(false)
       setSessionRoomName(null)
+      setLanguage(null)
     }
   }
 
@@ -175,19 +180,110 @@ export default function ChatPage() {
   const data = bookingState?.data || {}
   const hasActiveAgentStream = messages.some(m => m.role === 'agent' && m.streaming)
   const activeFieldByStep = {
-    idle: null,
-    collect_service: 'service',
-    collect_doctor: 'doctor',
-    collect_slot: 'slot',
-    collect_name: 'patient',
-    confirm: 'patient',
-    done: null,
-    cancelled: null,
+    idle: null, collect_service: 'service', collect_doctor: 'doctor',
+    collect_slot: 'slot', collect_name: 'patient', confirm: 'patient',
+    done: null, cancelled: null,
   }
   const activeField = activeFieldByStep[bookingState?.step || 'idle']
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-0)' }}>
+
+      {/* ── Language picker overlay ── */}
+      {showLangPicker && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 100,
+            background: 'rgba(0,0,0,0.65)',
+            backdropFilter: 'blur(6px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+          onClick={handleLangPickerCancel}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: 'var(--bg-1)',
+              border: '1px solid var(--border)',
+              borderRadius: '16px',
+              padding: '32px',
+              width: '300px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '20px',
+              boxShadow: '0 32px 80px rgba(0,0,0,0.6)',
+            }}
+          >
+            <div>
+              <div style={{
+                fontFamily: 'var(--font-display)', fontWeight: 700,
+                fontSize: '15px', color: 'var(--text-0)', marginBottom: '4px',
+              }}>
+                Select Language
+              </div>
+              <div style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>
+                {mode === 'booking' ? 'Booking' : 'RAG'} session · the agent will respond in your chosen language
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {[
+                { lang: 'en', flag: '🇬🇧', label: 'English', sub: 'Agent responds in English' },
+                { lang: 'de', flag: '🇩🇪', label: 'Deutsch', sub: 'Agent antwortet auf Deutsch' },
+              ].map(({ lang, flag, label, sub }) => (
+                <button
+                  key={lang}
+                  onClick={() => handleLanguageSelect(lang)}
+                  style={{
+                    cursor: 'pointer',
+                    background: 'var(--bg-2)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '10px',
+                    padding: '14px 16px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '14px',
+                    textAlign: 'left',
+                    width: '100%',
+                    transition: 'border-color 0.15s, background 0.15s',
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.borderColor = 'var(--cyan)'
+                    e.currentTarget.style.background = 'rgba(0,212,255,0.06)'
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.borderColor = 'var(--border)'
+                    e.currentTarget.style.background = 'var(--bg-2)'
+                  }}
+                >
+                  <span style={{ fontSize: '26px', lineHeight: 1, flexShrink: 0 }}>{flag}</span>
+                  <div>
+                    <div style={{
+                      fontFamily: 'var(--font-display)', fontWeight: 600,
+                      fontSize: '14px', color: 'var(--text-0)',
+                    }}>{label}</div>
+                    <div style={{
+                      fontFamily: 'var(--font-mono)', fontSize: '11px',
+                      color: 'var(--text-3)', marginTop: '2px',
+                    }}>{sub}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={handleLangPickerCancel}
+              style={{
+                cursor: 'pointer', background: 'transparent', border: 'none',
+                color: 'var(--text-3)', fontFamily: 'var(--font-mono)',
+                fontSize: '11px', textAlign: 'center', padding: '2px',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Header ── */}
       <div style={{
@@ -201,59 +297,57 @@ export default function ChatPage() {
             AI-powered appointment booking
           </p>
         </div>
+
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          {/* Mode toggle (only before connecting) */}
-          {!connected && (
+
+          {/* Mode toggle — only visible before connecting */}
+          {!connected && !connecting && (
             <div style={{
-              display: 'flex',
-              background: 'var(--bg-2)',
-              border: '1px solid var(--border)',
-              borderRadius: '999px',
-              padding: '3px',
-              gap: '3px',
+              display: 'flex', background: 'var(--bg-2)',
+              border: '1px solid var(--border)', borderRadius: '999px',
+              padding: '3px', gap: '3px',
             }}>
-              <button
-                onClick={() => setMode('rag')}
-                disabled={connecting}
-                style={{
-                  cursor: connecting ? 'not-allowed' : 'pointer',
-                  border: 'none',
-                  borderRadius: '999px',
-                  padding: '7px 12px',
-                  fontSize: '12px',
-                  fontFamily: 'var(--font-mono)',
-                  color: mode === 'rag' ? 'var(--bg-0)' : 'var(--text-2)',
-                  background: mode === 'rag' ? 'var(--cyan)' : 'transparent',
-                }}
-              >
-                RAG
-              </button>
-              <button
-                onClick={() => setMode('booking')}
-                disabled={connecting}
-                style={{
-                  cursor: connecting ? 'not-allowed' : 'pointer',
-                  border: 'none',
-                  borderRadius: '999px',
-                  padding: '7px 12px',
-                  fontSize: '12px',
-                  fontFamily: 'var(--font-mono)',
-                  color: mode === 'booking' ? 'var(--bg-0)' : 'var(--text-2)',
-                  background: mode === 'booking' ? 'var(--cyan)' : 'transparent',
-                }}
-              >
-                Booking
-              </button>
+              {[
+                { value: 'rag',     label: 'RAG' },
+                { value: 'booking', label: 'Booking' },
+              ].map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setMode(value)}
+                  style={{
+                    cursor: 'pointer', border: 'none', borderRadius: '999px',
+                    padding: '7px 14px', fontSize: '12px',
+                    fontFamily: 'var(--font-mono)',
+                    color: mode === value ? 'var(--bg-0)' : 'var(--text-2)',
+                    background: mode === value ? 'var(--cyan)' : 'transparent',
+                    transition: 'all 0.15s',
+                  }}
+                >{label}</button>
+              ))}
             </div>
           )}
+
+          {/* Live + session info badge when connected */}
           {connected && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'var(--green)', animation: 'pulse 1.5s infinite', boxShadow: '0 0 8px var(--green)' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{
+                width: '7px', height: '7px', borderRadius: '50%',
+                background: 'var(--green)', animation: 'pulse 1.5s infinite',
+                boxShadow: '0 0 8px var(--green)',
+              }} />
               <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--green)' }}>LIVE</span>
+              <span style={{
+                fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)',
+                background: 'var(--bg-2)', border: '1px solid var(--border)',
+                borderRadius: '6px', padding: '2px 8px', marginLeft: '2px',
+              }}>
+                {(language || '').toUpperCase()} · {mode === 'booking' ? 'Booking' : 'RAG'}
+              </span>
             </div>
           )}
+
           {!connected ? (
-            <Btn onClick={connect} disabled={connecting} size="lg">
+            <Btn onClick={handleStartClick} disabled={connecting} size="lg">
               {connecting ? <><Spinner size={14} /> Connecting...</> : '▶ Start Session'}
             </Btn>
           ) : (
@@ -263,20 +357,26 @@ export default function ChatPage() {
       </div>
 
       {/* ── Body ── */}
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: mode === 'booking' ? '1fr 340px' : '1fr', overflow: 'hidden' }}>
+      <div style={{
+        flex: 1, display: 'grid',
+        gridTemplateColumns: mode === 'booking' ? '1fr 340px' : '1fr',
+        overflow: 'hidden',
+      }}>
 
-        {/* Left — visualizer + chat bubbles */}
+        {/* Left — voice ring + chat */}
         <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
           {/* Voice ring */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', padding: '32px 32px 20px', flexShrink: 0 }}>
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center',
+            gap: '16px', padding: '32px 32px 20px', flexShrink: 0,
+          }}>
             <div style={{ position: 'relative', width: '140px', height: '140px' }}>
               {[0, 1, 2].map(i => (
                 <div key={i} style={{
                   position: 'absolute', inset: `${-i * 18}px`,
                   border: `1px solid rgba(0,212,255,${(agentSpeaking ? 0.35 : connected ? 0.12 : 0.04) - i * 0.04})`,
                   borderRadius: '50%',
-                  // Avoid mixing `animation` shorthand with `animationDelay` (React warning)
                   animationName: connected ? 'pulse' : 'none',
                   animationDuration: `${1.2 + i * 0.4}s`,
                   animationTimingFunction: 'ease-in-out',
@@ -303,59 +403,76 @@ export default function ChatPage() {
 
             <div style={{ textAlign: 'center' }}>
               <div style={{
-                fontFamily: 'var(--font-display)', fontSize: '18px', fontWeight: 700, transition: 'color 0.3s',
+                fontFamily: 'var(--font-display)', fontSize: '18px', fontWeight: 700,
+                transition: 'color 0.3s',
                 color: agentSpeaking ? 'var(--cyan)' : connected ? 'var(--text-1)' : 'var(--text-2)',
               }}>
                 {agentSpeaking ? 'Agent Speaking...' : connected ? 'Listening...' : 'Ready to Connect'}
               </div>
               <div style={{ fontSize: '11px', color: 'var(--text-3)', fontFamily: 'var(--font-mono)', marginTop: '3px' }}>
-                {connected ? `Session: ${sessionRoomName || roomNameBase}` : 'Click Start Session to begin'}
+                {connected
+                  ? `Session: ${sessionRoomName || roomNameBase}`
+                  : 'Select a mode then click Start Session'}
               </div>
             </div>
 
-            {/* Divider */}
             <div style={{ width: '100%', maxWidth: '480px', height: '1px', background: 'var(--border)' }} />
           </div>
 
           {/* Error */}
           {error && (
             <div style={{ padding: '0 32px 16px', flexShrink: 0 }}>
-              <div style={{ background: 'rgba(255,68,102,0.06)', border: '1px solid rgba(255,68,102,0.3)', borderRadius: 'var(--radius)', padding: '12px 16px' }}>
+              <div style={{
+                background: 'rgba(255,68,102,0.06)',
+                border: '1px solid rgba(255,68,102,0.3)',
+                borderRadius: 'var(--radius)', padding: '12px 16px',
+              }}>
                 <p style={{ color: 'var(--red)', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>⚠ {error}</p>
               </div>
             </div>
           )}
 
-          {/* ── Chat bubbles ── */}
+          {/* Chat bubbles */}
           <div ref={chatRef} style={{
             flex: 1, overflowY: 'auto', padding: '0 32px 24px',
             display: 'flex', flexDirection: 'column', gap: '12px',
           }}>
-
-            {/* Empty state */}
             {messages.length === 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, gap: '8px', color: 'var(--text-3)' }}>
+              <div style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center',
+                justifyContent: 'center', flex: 1, gap: '8px', color: 'var(--text-3)',
+              }}>
                 <span style={{ fontSize: '32px' }}>💬</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>Conversation will appear here</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
+                  Conversation will appear here
+                </span>
               </div>
             )}
 
             {messages.map((msg, i) => {
               if (msg.role === 'system') return (
                 <div key={i} style={{ textAlign: 'center', padding: '4px 0' }}>
-                  <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)', background: 'var(--bg-2)', padding: '4px 12px', borderRadius: '20px', border: '1px solid var(--border)' }}>
-                    {msg.text}
-                  </span>
+                  <span style={{
+                    fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)',
+                    background: 'var(--bg-2)', padding: '4px 12px',
+                    borderRadius: '20px', border: '1px solid var(--border)',
+                  }}>{msg.text}</span>
                 </div>
               )
-
               const isUser = msg.role === 'user'
               return (
-                <div key={i} style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start', gap: '8px', alignItems: 'flex-end' }}>
+                <div key={i} style={{
+                  display: 'flex',
+                  justifyContent: isUser ? 'flex-end' : 'flex-start',
+                  gap: '8px', alignItems: 'flex-end',
+                }}>
                   {!isUser && (
-                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'rgba(0,212,255,0.12)', border: '1px solid rgba(0,212,255,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', flexShrink: 0 }}>
-                      🤖
-                    </div>
+                    <div style={{
+                      width: '28px', height: '28px', borderRadius: '50%',
+                      background: 'rgba(0,212,255,0.12)', border: '1px solid rgba(0,212,255,0.25)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '13px', flexShrink: 0,
+                    }}>🤖</div>
                   )}
                   <div style={{ maxWidth: '72%' }}>
                     <div style={{
@@ -366,31 +483,48 @@ export default function ChatPage() {
                       fontSize: '13px',
                       color: isUser ? 'var(--cyan)' : 'var(--text-0)',
                       lineHeight: 1.6,
+                    }}>{msg.text}</div>
+                    <div style={{
+                      fontSize: '10px', color: 'var(--text-3)',
+                      fontFamily: 'var(--font-mono)', marginTop: '3px',
+                      textAlign: isUser ? 'right' : 'left',
+                      paddingLeft: isUser ? 0 : '4px',
+                      paddingRight: isUser ? '4px' : 0,
                     }}>
-                      {msg.text}
-                    </div>
-                    <div style={{ fontSize: '10px', color: 'var(--text-3)', fontFamily: 'var(--font-mono)', marginTop: '3px', textAlign: isUser ? 'right' : 'left', paddingLeft: isUser ? 0 : '4px', paddingRight: isUser ? '4px' : 0 }}>
                       {msg.time.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' })}
                     </div>
                   </div>
                   {isUser && (
-                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', flexShrink: 0 }}>
-                      👤
-                    </div>
+                    <div style={{
+                      width: '28px', height: '28px', borderRadius: '50%',
+                      background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '13px', flexShrink: 0,
+                    }}>👤</div>
                   )}
                 </div>
               )
             })}
 
-            {/* Typing indicator while agent is speaking */}
             {agentSpeaking && !hasActiveAgentStream && (
               <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px' }}>
-                <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'rgba(0,212,255,0.12)', border: '1px solid rgba(0,212,255,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px' }}>
-                  🤖
-                </div>
-                <div style={{ padding: '10px 16px', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: '16px 16px 16px 4px', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                <div style={{
+                  width: '28px', height: '28px', borderRadius: '50%',
+                  background: 'rgba(0,212,255,0.12)', border: '1px solid rgba(0,212,255,0.25)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px',
+                }}>🤖</div>
+                <div style={{
+                  padding: '10px 16px', background: 'var(--bg-2)',
+                  border: '1px solid var(--border)', borderRadius: '16px 16px 16px 4px',
+                  display: 'flex', gap: '5px', alignItems: 'center',
+                }}>
                   {[0, 1, 2].map(i => (
-                    <div key={i} style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--cyan)', opacity: 0.7, animation: 'pulse 1.2s ease-in-out infinite', animationDelay: `${i * 0.2}s` }} />
+                    <div key={i} style={{
+                      width: '6px', height: '6px', borderRadius: '50%',
+                      background: 'var(--cyan)', opacity: 0.7,
+                      animation: 'pulse 1.2s ease-in-out infinite',
+                      animationDelay: `${i * 0.2}s`,
+                    }} />
                   ))}
                 </div>
               </div>
@@ -398,67 +532,97 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* ── Right: Booking status panel ── */}
+        {/* Right — Booking status panel */}
         {mode === 'booking' && (
-        <div style={{ borderLeft: '1px solid var(--border)', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto', background: 'var(--bg-1)' }}>
+          <div style={{
+            borderLeft: '1px solid var(--border)', padding: '24px',
+            display: 'flex', flexDirection: 'column', gap: '16px',
+            overflowY: 'auto', background: 'var(--bg-1)',
+          }}>
+            <div>
+              <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>
+                Booking Status
+              </h3>
+              <p style={{ fontSize: '11px', color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+                Real-time progress
+              </p>
+            </div>
 
-          <div>
-            <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>Booking Status</h3>
-            <p style={{ fontSize: '11px', color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>Real-time progress</p>
-          </div>
-
-          {/* Step badge */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', background: 'var(--bg-2)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
-            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: stepInfo.color, boxShadow: `0 0 8px ${stepInfo.color}` }} />
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: stepInfo.color }}>{stepInfo.label}</span>
-          </div>
-
-          {/* Booking fields */}
-          {[
-            { key: 'service', label: 'Service', value: data.service },
-            { key: 'doctor',  label: 'Doctor',  value: data.doctor },
-            { key: 'slot',    label: 'Slot',    value: data.slot },
-            { key: 'patient', label: 'Patient', value: data.name },
-          ].map(({ key, label, value }) => (
-            <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{label}</span>
-              <span style={{
-                fontFamily: 'var(--font-mono)', fontSize: '12px',
-                color: value ? 'var(--text-0)' : 'var(--text-3)',
-                padding: '7px 10px', background: 'var(--bg-2)', borderRadius: 'var(--radius)',
-                border: `1px solid ${activeField === key ? 'var(--cyan)' : value ? 'var(--border-bright)' : 'var(--border)'}`,
-                minHeight: '32px',
-              }}>
-                {value || '—'}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              padding: '12px', background: 'var(--bg-2)',
+              borderRadius: 'var(--radius)', border: '1px solid var(--border)',
+            }}>
+              <div style={{
+                width: '8px', height: '8px', borderRadius: '50%',
+                background: stepInfo.color, boxShadow: `0 0 8px ${stepInfo.color}`,
+              }} />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: stepInfo.color }}>
+                {stepInfo.label}
               </span>
             </div>
-          ))}
 
-          {/* Confirmation */}
-          {data.confirmation && (
-            <div style={{ padding: '14px', background: 'rgba(0,232,122,0.08)', border: '1px solid rgba(0,232,122,0.3)', borderRadius: 'var(--radius)', marginTop: '8px' }}>
-              <div style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--green)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '6px' }}>✓ Confirmed</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '16px', fontWeight: 500, color: 'var(--green)', letterSpacing: '0.12em' }}>{data.confirmation}</div>
-            </div>
-          )}
-
-          {/* Available options */}
-          {bookingState?.available?.length > 0 && (
-            <div>
-              <div style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '8px' }}>Options</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                {bookingState.available.map((opt, i) => (
-                  <div key={i} style={{ padding: '7px 10px', background: 'var(--bg-2)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', fontSize: '12px', fontFamily: 'var(--font-mono)', color: 'var(--text-1)' }}>
-                    {opt}
-                  </div>
-                ))}
+            {[
+              { key: 'service', label: 'Service', value: data.service },
+              { key: 'doctor',  label: 'Doctor',  value: data.doctor },
+              { key: 'slot',    label: 'Slot',    value: data.slot },
+              { key: 'patient', label: 'Patient', value: data.name },
+            ].map(({ key, label, value }) => (
+              <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{
+                  fontSize: '10px', fontFamily: 'var(--font-mono)',
+                  color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.1em',
+                }}>{label}</span>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: '12px',
+                  color: value ? 'var(--text-0)' : 'var(--text-3)',
+                  padding: '7px 10px', background: 'var(--bg-2)',
+                  borderRadius: 'var(--radius)',
+                  border: `1px solid ${activeField === key ? 'var(--cyan)' : value ? 'var(--border-bright)' : 'var(--border)'}`,
+                  minHeight: '32px',
+                }}>
+                  {value || '—'}
+                </span>
               </div>
-            </div>
-          )}
-        </div>
+            ))}
+
+            {data.confirmation && (
+              <div style={{
+                padding: '14px', background: 'rgba(0,232,122,0.08)',
+                border: '1px solid rgba(0,232,122,0.3)',
+                borderRadius: 'var(--radius)', marginTop: '8px',
+              }}>
+                <div style={{
+                  fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--green)',
+                  textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '6px',
+                }}>✓ Confirmed</div>
+                <div style={{
+                  fontFamily: 'var(--font-mono)', fontSize: '16px',
+                  fontWeight: 500, color: 'var(--green)', letterSpacing: '0.12em',
+                }}>{data.confirmation}</div>
+              </div>
+            )}
+
+            {bookingState?.available?.length > 0 && (
+              <div>
+                <div style={{
+                  fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)',
+                  textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '8px',
+                }}>Options</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  {bookingState.available.map((opt, i) => (
+                    <div key={i} style={{
+                      padding: '7px 10px', background: 'var(--bg-2)',
+                      borderRadius: 'var(--radius)', border: '1px solid var(--border)',
+                      fontSize: '12px', fontFamily: 'var(--font-mono)', color: 'var(--text-1)',
+                    }}>{opt}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
   )
 }
-// ss
