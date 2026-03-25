@@ -179,11 +179,13 @@ export default function ChatPage() {
   const stepInfo = bookingState ? (STEPS[bookingState.step] || STEPS.idle) : STEPS.idle
   const data = bookingState?.data || {}
   const hasActiveAgentStream = messages.some(m => m.role === 'agent' && m.streaming)
+
   const activeFieldByStep = {
     idle: null, collect_service: 'service', collect_doctor: 'doctor',
     collect_slot: 'slot', collect_name: 'patient', confirm: 'patient',
     done: null, cancelled: null,
   }
+  
   const activeField = activeFieldByStep[bookingState?.step || 'idle']
 
   return (

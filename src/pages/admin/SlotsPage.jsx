@@ -20,8 +20,8 @@ export default function SlotsPage() {
   })
   const [search, setSearch] = useState('')
 
-  const [createModal, setCreateModal] = useState(false)
-  const [bulkModal, setBulkModal]     = useState(false)
+  const [addModal, setAddModal] = useState(false)
+  const [addTab, setAddTab]     = useState('recurring') // 'single' | 'recurring'
   const [editModal, setEditModal]     = useState(null)
   const [confirmDel, setConfirmDel]   = useState(null)
 
@@ -204,8 +204,7 @@ export default function SlotsPage() {
         sub={`${filtered.length} of ${slots.length} appointment slots`}
         actions={
           <div style={{ display: 'flex', gap: '10px' }}>
-            <Btn variant="secondary" onClick={() => setBulkModal(true)}>+ Bulk Slots</Btn>
-            <Btn onClick={() => setCreateModal(true)}>+ Add Slot</Btn>
+            <Btn onClick={() => { setAddTab('recurring'); setAddModal(true) }}>+ Add Slot</Btn>
           </div>
         }
       />
@@ -284,27 +283,40 @@ export default function SlotsPage() {
       </div>
 
       {/* Modals */}
-      <Modal open={createModal} onClose={() => setCreateModal(false)} title="Add Slot" width={460}>
+      <Modal open={addModal} onClose={() => setAddModal(false)} title="Add Slot" width={540}>
         {doctors.length === 0 || services.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '24px', color: 'var(--amber)', fontFamily: 'var(--font-mono)', fontSize: '13px' }}>
             ⚠ You need at least one doctor and one service before adding slots.
           </div>
         ) : (
-          <SlotForm key="create" doctors={doctors} services={services}
-            doctorServices={doctorServices} serviceDoctors={serviceDoctors}
-            onClose={() => setCreateModal(false)} onRefresh={load} />
-        )}
-      </Modal>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <Btn
+                size="sm"
+                variant={addTab === 'single' ? 'primary' : 'secondary'}
+                onClick={() => setAddTab('single')}
+              >
+                Single
+              </Btn>
+              <Btn
+                size="sm"
+                variant={addTab === 'recurring' ? 'primary' : 'secondary'}
+                onClick={() => setAddTab('recurring')}
+              >
+                Weekly/Monthly
+              </Btn>
+            </div>
 
-      <Modal open={bulkModal} onClose={() => setBulkModal(false)} title="Bulk Add Slots" width={540}>
-        {doctors.length === 0 || services.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '24px', color: 'var(--amber)', fontFamily: 'var(--font-mono)', fontSize: '13px' }}>
-            ⚠ You need at least one doctor and one service before adding slots.
+            {addTab === 'single' ? (
+              <SlotForm key="single" doctors={doctors} services={services}
+                doctorServices={doctorServices} serviceDoctors={serviceDoctors}
+                onClose={() => setAddModal(false)} onRefresh={load} />
+            ) : (
+              <BulkSlotForm key="recurring" doctors={doctors} services={services}
+                doctorServices={doctorServices} serviceDoctors={serviceDoctors}
+                onClose={() => setAddModal(false)} onRefresh={load} />
+            )}
           </div>
-        ) : (
-          <BulkSlotForm doctors={doctors} services={services}
-            doctorServices={doctorServices} serviceDoctors={serviceDoctors}
-            onClose={() => setBulkModal(false)} onRefresh={load} />
         )}
       </Modal>
 
@@ -401,10 +413,10 @@ function SlotForm({ slot, doctors, services, doctorServices, serviceDoctors, onC
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <Select label="Doctor" value={form.doctor_id} onChange={handleDoctorChange}
-        options={[{ value: '', label: form.service_id ? `Doctors for selected service (${availableDoctors.length})` : 'Select Doctor' },
+        options={[{ value: '', label: 'Select Doctor' },
           ...availableDoctors.map(d => ({ value: d.id, label: d.full_name }))]} />
       <Select label="Service" value={form.service_id} onChange={handleServiceChange}
-        options={[{ value: '', label: form.doctor_id ? `Services for selected doctor (${availableServices.length})` : 'Select Service' },
+        options={[{ value: '', label: 'Select Service' },
           ...availableServices.map(s => ({ value: s.id, label: s.name }))]} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
         <Input label="Date" type="date" value={form.slot_date} onChange={e => setForm(f => ({ ...f, slot_date: e.target.value }))} />
