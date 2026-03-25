@@ -23,6 +23,9 @@ export default function ChatPage() {
   const [bookingState, setBookingState] = useState(null)
   const [messages, setMessages] = useState([])
   const [agentSpeaking, setAgentSpeaking] = useState(false)
+  const [micEnabled, setMicEnabled] = useState(true)
+  const [draft, setDraft] = useState('')
+  const [sendingText, setSendingText] = useState(false)
   const [mode, setMode] = useState('rag')        // 'rag' | 'booking'
   const [language, setLanguage] = useState(null) // null | 'en' | 'de'
   const [showLangPicker, setShowLangPicker] = useState(false)
@@ -135,6 +138,7 @@ export default function ChatPage() {
 
       await r.connect(LIVEKIT_URL, token)
       await r.localParticipant.setMicrophoneEnabled(true)
+      setMicEnabled(true)
       setRoom(r)
       setConnected(true)
 
@@ -173,6 +177,52 @@ export default function ChatPage() {
       setAgentSpeaking(false)
       setSessionRoomName(null)
       setLanguage(null)
+      setMicEnabled(true)
+      setDraft('')
+    }
+  }
+
+  async function toggleMic() {
+    if (!room) return
+    try {
+      const next = !micEnabled
+      await room.localParticipant.setMicrophoneEnabled(next)
+      setMicEnabled(next)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  async function sendTextMessage() {
+    const text = (draft || '').trim()
+    if (!text || !room || !connected) return
+    setSendingText(true)
+    setError(null)
+    try {
+      setMessages(prev => ([...prev, {
+        id: `user-text-${Date.now()}`,
+        role: 'user',
+        text,
+        ts: Date.now(),
+        time: new Date(),
+        streaming: false,
+      }]))
+
+      // LiveKit Agents listens on the `lk.chat` text stream topic.
+      if (typeof room.localParticipant?.sendText === 'function') {
+        await room.localParticipant.sendText(text, { topic: 'lk.chat' })
+      } else if (typeof room.localParticipant?.publishData === 'function') {
+        const payload = new TextEncoder().encode(text)
+        await room.localParticipant.publishData(payload, { reliable: true, topic: 'lk.chat' })
+      } else {
+        throw new Error('Text messaging is not supported by the current LiveKit client')
+      }
+
+      setDraft('')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSendingText(false)
     }
   }
 
@@ -531,6 +581,95 @@ export default function ChatPage() {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Unified input (mic + text) */}
+          <div style={{
+            flexShrink: 0,
+            borderTop: '1px solid var(--border)',
+            background: 'var(--bg-1)',
+            padding: '14px 32px',
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              background: 'var(--bg-2)',
+              border: '1px solid var(--border)',
+              borderRadius: '14px',
+              padding: '10px',
+            }}>
+              <button
+                onClick={toggleMic}
+                disabled={!connected || connecting}
+                title={micEnabled ? 'Mute mic' : 'Unmute mic'}
+                style={{
+                  cursor: (!connected || connecting) ? 'not-allowed' : 'pointer',
+                  width: '44px',
+                  height: '40px',
+                  borderRadius: '12px',
+                  border: '1px solid var(--border)',
+                  background: micEnabled ? 'rgba(0,212,255,0.10)' : 'rgba(255,68,102,0.08)',
+                  color: micEnabled ? 'var(--cyan)' : 'var(--red)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '16px',
+                  flexShrink: 0,
+                  opacity: (!connected || connecting) ? 0.6 : 1,
+                }}
+              >
+                {micEnabled ? '🎙️' : '🔇'}
+              </button>
+
+              <input
+                value={draft}
+                onChange={e => setDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    sendTextMessage()
+                  }
+                }}
+                disabled={!connected || connecting}
+                placeholder={connected ? 'Type a message…' : 'Start a session to chat…'}
+                style={{
+                  flex: 1,
+                  height: '40px',
+                  borderRadius: '12px',
+                  border: '1px solid transparent',
+                  background: 'var(--bg-3)',
+                  color: 'var(--text-0)',
+                  padding: '0 12px',
+                  outline: 'none',
+                  fontFamily: 'var(--font-body)',
+                  fontSize: '13px',
+                  opacity: (!connected || connecting) ? 0.7 : 1,
+                }}
+                onFocus={e => { e.target.style.borderColor = 'var(--cyan-dim)' }}
+                onBlur={e => { e.target.style.borderColor = 'transparent' }}
+              />
+
+              <Btn
+                onClick={sendTextMessage}
+                disabled={!connected || connecting || sendingText || !draft.trim()}
+                size="lg"
+              >
+                {sendingText ? <><Spinner size={14} /> Sending...</> : 'Send'}
+              </Btn>
+            </div>
+            <div style={{
+              marginTop: '8px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              gap: '10px',
+              fontSize: '10px',
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--text-3)',
+            }}>
+              <span>{connected ? 'Tip: press Enter to send' : 'Voice + text available after connecting'}</span>
+              <span>{connected ? (micEnabled ? 'Mic on' : 'Mic muted') : 'Not connected'}</span>
+            </div>
           </div>
         </div>
 
