@@ -1,15 +1,42 @@
 const BASE = import.meta.env.VITE_API_URL || '/api'
 
 async function req(method, path, body) {
+  const shouldLogLatency =
+    path.startsWith('/bookings') ||
+    path.startsWith('/clinic/services') ||
+    path.startsWith('/clinic/doctors') ||
+    path.startsWith('/clinic/slots') ||
+    path.startsWith('/livekit/token')
+
+  const t0 = shouldLogLatency ? performance.now() : 0
+  const reqId = shouldLogLatency ? Math.random().toString(16).slice(2) : ''
+
   const opts = {
     method,
     headers: { 'Content-Type': 'application/json' },
   }
   if (body !== undefined) opts.body = JSON.stringify(body)
-  const res = await fetch(`${BASE}${path}`, opts)
+  let res
+  try {
+    res = await fetch(`${BASE}${path}`, opts)
+  } catch (e) {
+    if (shouldLogLatency) {
+      const dt = performance.now() - t0
+      console.warn(`[LATENCY][${reqId}] ${method} ${path} failed after ${dt.toFixed(0)}ms`)
+    }
+    throw e
+  }
   if (!res.ok) {
+    if (shouldLogLatency) {
+      const dt = performance.now() - t0
+      console.warn(`[LATENCY][${reqId}] ${method} ${path} -> HTTP ${res.status} in ${dt.toFixed(0)}ms`)
+    }
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || `HTTP ${res.status}`)
+  }
+  if (shouldLogLatency) {
+    const dt = performance.now() - t0
+    console.info(`[LATENCY][${reqId}] ${method} ${path} -> ${res.status} in ${dt.toFixed(0)}ms`)
   }
   return res.json()
 }

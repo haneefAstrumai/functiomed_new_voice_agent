@@ -11,6 +11,7 @@ const STEPS = {
   collect_slot:    { label: 'Choosing Slot',    color: 'var(--amber)' },
   collect_name:    { label: 'Patient Name',     color: 'var(--amber)' },
   confirm:         { label: 'Confirming',       color: 'var(--cyan)' },
+  processing:      { label: 'Processing',      color: 'var(--cyan-dim)' },
   done:            { label: 'Booked ✓',         color: 'var(--green)' },
   cancelled:       { label: 'Cancelled',        color: 'var(--red)' },
 }
@@ -32,6 +33,7 @@ export default function ChatPage() {
   const [roomNameBase] = useState(() => `room-${Math.random().toString(36).slice(2, 8)}`)
   const [sessionRoomName, setSessionRoomName] = useState(null)
   const [identity] = useState(() => `user-${Math.random().toString(36).slice(2, 8)}`)
+  const [modeTransition, setModeTransition] = useState(false)
   const chatRef = useRef(null)
   const streamMessageIds = useRef({ agent: null, user: null })
 
@@ -98,7 +100,24 @@ export default function ChatPage() {
           if (raw instanceof Uint8Array) raw = new TextDecoder().decode(raw)
           if (typeof raw !== 'string') raw = String(raw)
           const msg = JSON.parse(raw)
-          if (msg.type === 'booking_update') setBookingState(msg)
+          if (msg.type === 'booking_update') {
+            setBookingState(msg)
+          } else if (msg.type === 'mode_change') {
+            // Update the mode in the frontend
+            setMode(msg.mode)
+            setModeTransition(true)
+            setTimeout(() => setModeTransition(false), 1000)
+            // Add a system message to show mode switch
+            setMessages(prev => [...prev, {
+              id: `mode-change-${Date.now()}`,
+              role: 'system',
+              text: msg.mode === 'rag' 
+                ? 'Switched to Q&A mode — ask me anything about the clinic'
+                : 'Switched to Booking mode — let\'s schedule your appointment',
+              ts: Date.now(),
+              time: new Date(),
+            }])
+          }
         } catch (e) {
           console.error('DataReceived parse error:', e)
         }
@@ -233,6 +252,7 @@ export default function ChatPage() {
   const activeFieldByStep = {
     idle: null, collect_service: 'service', collect_doctor: 'doctor',
     collect_slot: 'slot', collect_name: 'patient', confirm: 'patient',
+    processing: null,
     done: null, cancelled: null,
   }
   
@@ -389,9 +409,17 @@ export default function ChatPage() {
               }} />
               <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--green)' }}>LIVE</span>
               <span style={{
-                fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)',
-                background: 'var(--bg-2)', border: '1px solid var(--border)',
-                borderRadius: '6px', padding: '2px 8px', marginLeft: '2px',
+                fontSize: '11px', 
+                fontFamily: 'var(--font-mono)', 
+                color: 'var(--text-3)',
+                background: 'var(--bg-2)', 
+                border: '1px solid var(--border)',
+                borderRadius: '6px', 
+                padding: '2px 8px', 
+                marginLeft: '2px',
+                transition: 'all 0.3s',
+                transform: modeTransition ? 'scale(1.05)' : 'scale(1)',
+                backgroundColor: modeTransition ? 'var(--cyan-dim)' : 'var(--bg-2)',
               }}>
                 {(language || '').toUpperCase()} · {mode === 'booking' ? 'Booking' : 'RAG'}
               </span>
