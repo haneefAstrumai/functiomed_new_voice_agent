@@ -36,6 +36,14 @@ export default function ChatPage() {
   const [modeTransition, setModeTransition] = useState(false)
   const chatRef = useRef(null)
   const streamMessageIds = useRef({ agent: null, user: null })
+  // ── Response latency tracking ──────────────────────────────────────────────
+  // Records the timestamp when the user's input is finalized (speech or text).
+  // Cleared once the agent's first reply token arrives.
+  const t0UserFinal = useRef(null)
+  const modeRef = useRef('rag') // kept in sync so event handlers can read it
+
+  // Keep modeRef in sync so LiveKit event handler closures can read current mode
+  useEffect(() => { modeRef.current = mode }, [mode])
 
   useEffect(() => {
     if (chatRef.current) {
@@ -85,10 +93,14 @@ export default function ChatPage() {
   async function connect(lang) {
     setConnecting(true)
     setError(null)
+    const t0Connect = performance.now()
+    console.log('%c[CONN] Connecting...', 'color:#00d4ff;font-weight:bold', { mode, lang, identity })
     try {
       const roomName = `${roomNameBase}-${mode}-${lang}`
       setSessionRoomName(roomName)
+      const t0Token = performance.now()
       const { token } = await api.livekit.token(roomName, identity, mode)
+      console.log(`%c[TOKEN] Fetched in ${(performance.now()-t0Token).toFixed(1)}ms`, 'color:#00d4ff', { roomName })
 
       const { Room, RoomEvent } = await import('livekit-client')
       const r = new Room()
@@ -101,6 +113,7 @@ export default function ChatPage() {
           if (typeof raw !== 'string') raw = String(raw)
           const msg = JSON.parse(raw)
           if (msg.type === 'booking_update') {
+            console.log('%c[BOOKING] State update', 'color:#f59e0b;font-weight:bold', { step: msg.step, data: msg.data })
             setBookingState(msg)
           } else if (msg.type === 'mode_change') {
             // Update the mode in the frontend
@@ -136,26 +149,48 @@ export default function ChatPage() {
           if (!seg.text?.trim()) return
           const isAgent = !participant || participant.identity !== identity
           if (isAgent) {
+            // ── Measure round-trip: user finalized → agent first word ──────────
+            if (t0UserFinal.current !== null) {
+              const ms = (performance.now() - t0UserFinal.current).toFixed(0)
+              const flow = modeRef.current === 'booking' ? 'BOOKING' : 'RAG'
+              console.log(
+                `%c[LATENCY][${flow}] Agent first response: ${ms}ms`,
+                `color:${modeRef.current === 'booking' ? '#f59e0b' : '#22c55e'};font-weight:bold`
+              )
+              t0UserFinal.current = null  // reset so we only log once per turn
+            }
+            if (seg.final) console.log('%c[TRANSCRIPT][agent] final', 'color:#22c55e', seg.text)
             setAgentSpeaking(!seg.final)
             upsertStreamingMessage('agent', seg.text, !!seg.final)
           } else {
+            // ── User speech finalized: start the response timer ───────────────
+            if (seg.final) {
+              t0UserFinal.current = performance.now()
+              const flow = modeRef.current === 'booking' ? 'BOOKING' : 'RAG'
+              console.log(`%c[LATENCY][${flow}] User finalised → waiting for agent...`, 'color:#a78bfa', seg.text)
+            }
             upsertStreamingMessage('user', seg.text, !!seg.final)
           }
         })
       })
 
       r.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
-        setAgentSpeaking(speakers.some(p => p.identity !== identity))
+        const agentSpeakingNow = speakers.some(p => p.identity !== identity)
+        if (agentSpeakingNow) console.log('%c[AGENT] Started speaking', 'color:#00d4ff')
+        setAgentSpeaking(agentSpeakingNow)
       })
 
       r.on(RoomEvent.Disconnected, () => {
+        console.log('%c[CONN] Disconnected', 'color:#ff4466')
         setConnected(false)
         setRoom(null)
         setAgentSpeaking(false)
         setSessionRoomName(null)
       })
 
+      const t0Room = performance.now()
       await r.connect(LIVEKIT_URL, token)
+      console.log(`%c[CONN] Room connected in ${(performance.now()-t0Room).toFixed(1)}ms (total: ${(performance.now()-t0Connect).toFixed(1)}ms)`, 'color:#22c55e;font-weight:bold')
       await r.localParticipant.setMicrophoneEnabled(true)
       setMicEnabled(true)
       setRoom(r)
@@ -180,6 +215,7 @@ export default function ChatPage() {
         time: new Date(),
       }])
     } catch (e) {
+      console.error('%c[CONN] Connection failed', 'color:#ff4466;font-weight:bold', e.message)
       setError(e.message)
       setLanguage(null)
     } finally {
@@ -206,6 +242,7 @@ export default function ChatPage() {
     try {
       const next = !micEnabled
       await room.localParticipant.setMicrophoneEnabled(next)
+      console.log(`%c[MIC] ${next ? 'Unmuted' : 'Muted'}`, 'color:#f59e0b')
       setMicEnabled(next)
     } catch (e) {
       setError(e.message)
@@ -217,6 +254,8 @@ export default function ChatPage() {
     if (!text || !room || !connected) return
     setSendingText(true)
     setError(null)
+    const t0Text = performance.now()
+    console.log('%c[TEXT] Sending message', 'color:#a78bfa', text)
     try {
       setMessages(prev => ([...prev, {
         id: `user-text-${Date.now()}`,
